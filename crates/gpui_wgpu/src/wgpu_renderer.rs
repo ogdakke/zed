@@ -1,9 +1,9 @@
 use crate::{CompositorGpuHint, WgpuAtlas, WgpuContext};
 use bytemuck::{Pod, Zeroable};
 use gpui::{
-    AtlasTextureId, Background, Bounds, DevicePixels, GpuSpecs, MonochromeSprite, Path, Point,
-    PolychromeSprite, PrimitiveBatch, Quad, ScaledPixels, Scene, Shadow, Size, SubpixelSprite,
-    Underline, get_gamma_correction_ratios,
+    AtlasTextureId, Background, Bounds, DevicePixels, EffectQuad, GpuSpecs, MonochromeSprite, Path,
+    Point, PolychromeSprite, PrimitiveBatch, Quad, ScaledPixels, Scene, Shadow, Size,
+    SubpixelSprite, Underline, get_gamma_correction_ratios,
 };
 use log::warn;
 #[cfg(not(target_family = "wasm"))]
@@ -83,6 +83,7 @@ pub struct WgpuSurfaceConfig {
 
 struct WgpuPipelines {
     quads: wgpu::RenderPipeline,
+    effect_quads: wgpu::RenderPipeline,
     shadows: wgpu::RenderPipeline,
     path_rasterization: wgpu::RenderPipeline,
     paths: wgpu::RenderPipeline,
@@ -739,6 +740,18 @@ impl WgpuRenderer {
             &shader_module,
         );
 
+        let effect_quads = create_pipeline(
+            "effect_quads",
+            "vs_effect_quad",
+            "fs_effect_quad",
+            &layouts.globals,
+            &layouts.instances,
+            wgpu::PrimitiveTopology::TriangleStrip,
+            &[Some(color_target.clone())],
+            1,
+            &shader_module,
+        );
+
         let shadows = create_pipeline(
             "shadows",
             "vs_shadow",
@@ -879,6 +892,7 @@ impl WgpuRenderer {
 
         WgpuPipelines {
             quads,
+            effect_quads,
             shadows,
             path_rasterization,
             paths,
@@ -1234,6 +1248,11 @@ impl WgpuRenderer {
                         PrimitiveBatch::Quads(range) => {
                             self.draw_quads(&scene.quads[range], &mut instance_offset, &mut pass)
                         }
+                        PrimitiveBatch::EffectQuads(range) => self.draw_effect_quads(
+                            &scene.effect_quads[range],
+                            &mut instance_offset,
+                            &mut pass,
+                        ),
                         PrimitiveBatch::Shadows(range) => self.draw_shadows(
                             &scene.shadows[range],
                             &mut instance_offset,
@@ -1350,6 +1369,22 @@ impl WgpuRenderer {
             data,
             quads.len() as u32,
             &self.resources().pipelines.quads,
+            instance_offset,
+            pass,
+        )
+    }
+
+    fn draw_effect_quads(
+        &self,
+        effects: &[EffectQuad],
+        instance_offset: &mut u64,
+        pass: &mut wgpu::RenderPass<'_>,
+    ) -> bool {
+        let data = unsafe { Self::instance_bytes(effects) };
+        self.draw_instances(
+            data,
+            effects.len() as u32,
+            &self.resources().pipelines.effect_quads,
             instance_offset,
             pass,
         )

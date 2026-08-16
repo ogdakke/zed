@@ -31,6 +31,7 @@ mod shader_compilation {
         // Define all modules
         let modules = [
             "quad",
+            "effect_quad",
             "shadow",
             "path_rasterization",
             "path_sprite",

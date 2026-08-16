@@ -8,8 +8,8 @@ use cocoa::{
 };
 use gpui::{
     AtlasTextureId, BackdropBlur, Background, Bounds, ContentMask, DevicePixels, DrawOrder,
-    MonochromeSprite, PaintSurface, Path, Point, PolychromeSprite, PrimitiveBatch, Quad,
-    ScaledPixels, Scene, Shadow, Size, Surface, Underline, point, size,
+    EffectQuad, MonochromeSprite, PaintSurface, Path, Point, PolychromeSprite, PrimitiveBatch,
+    Quad, ScaledPixels, Scene, Shadow, Size, Surface, Underline, point, size,
 };
 #[cfg(any(test, feature = "test-support"))]
 use image::RgbaImage;
@@ -172,6 +172,7 @@ pub(crate) struct MetalRenderer {
     /// Last time `COMET_GPU_STATS` logged.
     stats_last_log: Option<std::time::Instant>,
     quads_pipeline_state: metal::RenderPipelineState,
+    effect_quads_pipeline_state: metal::RenderPipelineState,
     underlines_pipeline_state: metal::RenderPipelineState,
     monochrome_sprites_pipeline_state: metal::RenderPipelineState,
     polychrome_sprites_pipeline_state: metal::RenderPipelineState,
@@ -359,6 +360,14 @@ impl MetalRenderer {
             "quad_fragment",
             MTLPixelFormat::BGRA8Unorm,
         );
+        let effect_quads_pipeline_state = build_pipeline_state(
+            &device,
+            &library,
+            "effect_quads",
+            "effect_quad_vertex",
+            "effect_quad_fragment",
+            MTLPixelFormat::BGRA8Unorm,
+        );
         let underlines_pipeline_state = build_pipeline_state(
             &device,
             &library,
@@ -416,6 +425,7 @@ impl MetalRenderer {
             path_free_frames: 0,
             stats_last_log: None,
             quads_pipeline_state,
+            effect_quads_pipeline_state,
             underlines_pipeline_state,
             monochrome_sprites_pipeline_state,
             polychrome_sprites_pipeline_state,
@@ -486,9 +496,13 @@ impl MetalRenderer {
             self.path_intermediate_msaa_texture = None;
             return;
         }
-        if self.path_intermediate_texture.as_ref().is_some_and(|texture| {
-            texture.width() == size.width.0 as u64 && texture.height() == size.height.0 as u64
-        }) {
+        if self
+            .path_intermediate_texture
+            .as_ref()
+            .is_some_and(|texture| {
+                texture.width() == size.width.0 as u64 && texture.height() == size.height.0 as u64
+            })
+        {
             return;
         }
 
@@ -1075,6 +1089,13 @@ impl MetalRenderer {
                     viewport_size,
                     command_encoder,
                 ),
+                PrimitiveBatch::EffectQuads(range) => self.draw_effect_quads(
+                    &scene.effect_quads[range],
+                    instance_buffer,
+                    &mut instance_offset,
+                    viewport_size,
+                    command_encoder,
+                ),
                 PrimitiveBatch::Paths(range) => {
                     let paths = &scene.paths[range];
                     command_encoder.end_encoding();
@@ -1145,10 +1166,11 @@ impl MetalRenderer {
             if !ok {
                 command_encoder.end_encoding();
                 anyhow::bail!(
-                    "scene too large: {} paths, {} shadows, {} quads, {} underlines, {} mono, {} poly, {} surfaces",
+                    "scene too large: {} paths, {} shadows, {} quads, {} effect quads, {} underlines, {} mono, {} poly, {} surfaces",
                     scene.paths.len(),
                     scene.shadows.len(),
                     scene.quads.len(),
+                    scene.effect_quads.len(),
                     scene.underlines.len(),
                     scene.monochrome_sprites.len(),
                     scene.polychrome_sprites.len(),
@@ -1193,9 +1215,7 @@ impl MetalRenderer {
         self.stats_last_log = Some(now);
 
         let texture_bytes = |texture: &Option<metal::Texture>| {
-            texture
-                .as_ref()
-                .map_or(0, |t| t.width() * t.height() * 4)
+            texture.as_ref().map_or(0, |t| t.width() * t.height() * 4)
         };
         let backdrop_bytes =
             texture_bytes(&self.backdrop_scratch) + texture_bytes(&self.backdrop_blurred);
@@ -1382,8 +1402,7 @@ impl MetalRenderer {
             }
         }
         let kernel: *mut objc::runtime::Object = unsafe {
-            let alloc: *mut objc::runtime::Object =
-                msg_send![class!(MPSImageGaussianBlur), alloc];
+            let alloc: *mut objc::runtime::Object = msg_send![class!(MPSImageGaussianBlur), alloc];
             let kernel: *mut objc::runtime::Object = msg_send![
                 alloc,
                 initWithDevice: self.device.as_ptr() as *mut objc::runtime::Object
@@ -1441,8 +1460,10 @@ impl MetalRenderer {
             mem::size_of_val(&source_rect) as u64,
             source_rect.as_ptr() as *const _,
         );
-        command_encoder
-            .set_fragment_texture(BackdropBlurInputIndex::SourceTexture as u64, Some(source_texture));
+        command_encoder.set_fragment_texture(
+            BackdropBlurInputIndex::SourceTexture as u64,
+            Some(source_texture),
+        );
 
         let blur_bytes_len = mem::size_of_val(blurs);
         let buffer_contents =
@@ -1581,6 +1602,61 @@ impl MetalRenderer {
             0,
             6,
             quads.len() as u64,
+        );
+        *instance_offset = next_offset;
+        true
+    }
+
+    fn draw_effect_quads(
+        &self,
+        effects: &[EffectQuad],
+        instance_buffer: &mut InstanceBuffer,
+        instance_offset: &mut usize,
+        viewport_size: Size<DevicePixels>,
+        command_encoder: &metal::RenderCommandEncoderRef,
+    ) -> bool {
+        if effects.is_empty() {
+            return true;
+        }
+        align_offset(instance_offset);
+
+        command_encoder.set_render_pipeline_state(&self.effect_quads_pipeline_state);
+        command_encoder.set_vertex_buffer(
+            EffectQuadInputIndex::Vertices as u64,
+            Some(&self.unit_vertices),
+            0,
+        );
+        command_encoder.set_vertex_buffer(
+            EffectQuadInputIndex::Effects as u64,
+            Some(&instance_buffer.metal_buffer),
+            *instance_offset as u64,
+        );
+        command_encoder.set_fragment_buffer(
+            EffectQuadInputIndex::Effects as u64,
+            Some(&instance_buffer.metal_buffer),
+            *instance_offset as u64,
+        );
+        command_encoder.set_vertex_bytes(
+            EffectQuadInputIndex::ViewportSize as u64,
+            mem::size_of_val(&viewport_size) as u64,
+            &viewport_size as *const Size<DevicePixels> as *const _,
+        );
+
+        let bytes_len = mem::size_of_val(effects);
+        let buffer_contents =
+            unsafe { (instance_buffer.metal_buffer.contents() as *mut u8).add(*instance_offset) };
+        let next_offset = *instance_offset + bytes_len;
+        if next_offset > instance_buffer.size {
+            return false;
+        }
+        unsafe {
+            ptr::copy_nonoverlapping(effects.as_ptr() as *const u8, buffer_contents, bytes_len);
+        }
+        command_encoder.draw_primitives_instanced(
+            metal::MTLPrimitiveType::Triangle,
+            0,
+            6,
+            effects.len() as u64,
         );
         *instance_offset = next_offset;
         true
@@ -2087,6 +2163,7 @@ fn batch_first_order(scene: &Scene, batch: &PrimitiveBatch) -> DrawOrder {
     match batch {
         PrimitiveBatch::Shadows(range) => scene.shadows[range.start].order,
         PrimitiveBatch::Quads(range) => scene.quads[range.start].order,
+        PrimitiveBatch::EffectQuads(range) => scene.effect_quads[range.start].order,
         PrimitiveBatch::Paths(range) => scene.paths[range.start].order,
         PrimitiveBatch::Underlines(range) => scene.underlines[range.start].order,
         PrimitiveBatch::MonochromeSprites { range, .. } => {
@@ -2202,6 +2279,13 @@ enum BackdropBlurInputIndex {
 enum QuadInputIndex {
     Vertices = 0,
     Quads = 1,
+    ViewportSize = 2,
+}
+
+#[repr(C)]
+enum EffectQuadInputIndex {
+    Vertices = 0,
+    Effects = 1,
     ViewportSize = 2,
 }
 
@@ -2451,7 +2535,10 @@ mod backdrop_blur_tests {
         let b = render(&mut scene);
 
         let diff = max_abs_diff(&a, &b, 0, 168, 152, 312);
-        assert!(diff <= 3, "vignette or shift at window edge: max diff {diff}");
+        assert!(
+            diff <= 3,
+            "vignette or shift at window edge: max diff {diff}"
+        );
     }
 
     #[test]

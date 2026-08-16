@@ -85,6 +85,7 @@ struct DirectXResources {
 struct DirectXRenderPipelines {
     shadow_pipeline: PipelineState<Shadow>,
     quad_pipeline: PipelineState<Quad>,
+    effect_quad_pipeline: PipelineState<EffectQuad>,
     path_rasterization_pipeline: PipelineState<PathRasterizationSprite>,
     path_sprite_pipeline: PipelineState<PathSprite>,
     underline_pipeline: PipelineState<Underline>,
@@ -348,6 +349,9 @@ impl DirectXRenderer {
             match batch {
                 PrimitiveBatch::Shadows(range) => self.draw_shadows(range.start, range.len()),
                 PrimitiveBatch::Quads(range) => self.draw_quads(range.start, range.len()),
+                PrimitiveBatch::EffectQuads(range) => {
+                    self.draw_effect_quads(range.start, range.len())
+                }
                 PrimitiveBatch::Paths(range) => {
                     let paths = &scene.paths[range];
                     self.draw_paths_to_intermediate(paths)?;
@@ -368,10 +372,11 @@ impl DirectXRenderer {
             .with_context(|| {
                 format!(
                     "scene too large:\
-                    {} paths, {} shadows, {} quads, {} underlines, {} mono, {} subpixel, {} poly, {} surfaces",
+                    {} paths, {} shadows, {} quads, {} effect quads, {} underlines, {} mono, {} subpixel, {} poly, {} surfaces",
                     scene.paths.len(),
                     scene.shadows.len(),
                     scene.quads.len(),
+                    scene.effect_quads.len(),
                     scene.underlines.len(),
                     scene.monochrome_sprites.len(),
                     scene.subpixel_sprites.len(),
@@ -446,6 +451,14 @@ impl DirectXRenderer {
             )?;
         }
 
+        if !scene.effect_quads.is_empty() {
+            self.pipelines.effect_quad_pipeline.update_buffer(
+                &devices.device,
+                &devices.device_context,
+                &scene.effect_quads,
+            )?;
+        }
+
         if !scene.underlines.is_empty() {
             self.pipelines.underline_pipeline.update_buffer(
                 &devices.device,
@@ -509,6 +522,28 @@ impl DirectXRenderer {
         }
         let devices = self.devices.as_ref().context("devices missing")?;
         self.pipelines.quad_pipeline.draw_range(
+            &devices.device,
+            &devices.device_context,
+            slice::from_ref(
+                &self
+                    .resources
+                    .as_ref()
+                    .context("resources missing")?
+                    .viewport,
+            ),
+            slice::from_ref(&self.globals.global_params_buffer),
+            4,
+            start as u32,
+            len as u32,
+        )
+    }
+
+    fn draw_effect_quads(&mut self, start: usize, len: usize) -> Result<()> {
+        if len == 0 {
+            return Ok(());
+        }
+        let devices = self.devices.as_ref().context("devices missing")?;
+        self.pipelines.effect_quad_pipeline.draw_range(
             &devices.device,
             &devices.device_context,
             slice::from_ref(
@@ -867,6 +902,13 @@ impl DirectXRenderPipelines {
             64,
             create_blend_state(device)?,
         )?;
+        let effect_quad_pipeline = PipelineState::new(
+            device,
+            "effect_quad_pipeline",
+            ShaderModule::EffectQuad,
+            16,
+            create_blend_state(device)?,
+        )?;
         let path_rasterization_pipeline = PipelineState::new(
             device,
             "path_rasterization_pipeline",
@@ -913,6 +955,7 @@ impl DirectXRenderPipelines {
         Ok(Self {
             shadow_pipeline,
             quad_pipeline,
+            effect_quad_pipeline,
             path_rasterization_pipeline,
             path_sprite_pipeline,
             underline_pipeline,
@@ -1624,6 +1667,7 @@ pub(crate) mod shader_resources {
     #[derive(Copy, Clone, Debug, Eq, PartialEq)]
     pub(crate) enum ShaderModule {
         Quad,
+        EffectQuad,
         Shadow,
         Underline,
         PathRasterization,
@@ -1676,6 +1720,10 @@ pub(crate) mod shader_resources {
                 ShaderModule::Quad => match target {
                     ShaderTarget::Vertex => QUAD_VERTEX_BYTES,
                     ShaderTarget::Fragment => QUAD_FRAGMENT_BYTES,
+                },
+                ShaderModule::EffectQuad => match target {
+                    ShaderTarget::Vertex => EFFECT_QUAD_VERTEX_BYTES,
+                    ShaderTarget::Fragment => EFFECT_QUAD_FRAGMENT_BYTES,
                 },
                 ShaderModule::Shadow => match target {
                     ShaderTarget::Vertex => SHADOW_VERTEX_BYTES,
@@ -1788,6 +1836,7 @@ pub(crate) mod shader_resources {
         pub fn as_str(self) -> &'static str {
             match self {
                 ShaderModule::Quad => "quad",
+                ShaderModule::EffectQuad => "effect_quad",
                 ShaderModule::Shadow => "shadow",
                 ShaderModule::Underline => "underline",
                 ShaderModule::PathRasterization => "path_rasterization",
