@@ -526,9 +526,22 @@ struct EdgeFadeParams {
     right_x: f32,
     band_left: f32,
     band_right: f32,
+    ease: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
 }
 
-// Per-pixel scoped edge fade — squared ramp, matching the CPU per-glyph
+// ease > 0: t^ease (2 = quadratic). ease < 0: 1-(1-t)^|ease|. ease == 0: t².
+fn apply_edge_fade_ease(ramp: f32, ease: f32) -> f32 {
+    if (ease < 0.0) {
+        return 1.0 - pow(1.0 - ramp, -ease);
+    }
+    let power = select(2.0, ease, ease > 0.0);
+    return pow(ramp, power);
+}
+
+// Per-pixel scoped edge fade — eased ramp, matching the CPU per-glyph
 // curve, all four edges. A zeroed struct is a no-op.
 fn edge_fade_alpha(position: vec2<f32>, fade: EdgeFadeParams) -> f32 {
     var ramp = 1.0;
@@ -544,7 +557,7 @@ fn edge_fade_alpha(position: vec2<f32>, fade: EdgeFadeParams) -> f32 {
     if (fade.band_right > 0.0) {
         ramp = min(ramp, clamp((fade.right_x - position.x) / fade.band_right, 0.0, 1.0));
     }
-    return ramp * ramp;
+    return apply_edge_fade_ease(ramp, fade.ease);
 }
 
 struct Quad {

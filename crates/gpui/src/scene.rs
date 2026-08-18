@@ -590,10 +590,13 @@ impl PrimitiveBatch {
 }
 
 /// Per-primitive scoped edge fade (see `Window::with_edge_fade`): the
-/// fragment shader multiplies alpha by a squared ramp measured from these
+/// fragment shader multiplies alpha by an eased ramp measured from these
 /// window-space edges (device pixels) — a TRUE per-pixel fade, so large
 /// fills and images dissolve across the band instead of popping at their
 /// bounding-box edge. A zero band disables that edge; zeroed = no fade.
+///
+/// `ease > 0` is `t^ease` (`2` = quadratic); `ease < 0` is ease-out
+/// `1-(1-t)^|ease|`; `ease == 0` is quadratic so a zeroed struct is a no-op.
 #[derive(Default, Debug, Copy, Clone, PartialEq)]
 #[repr(C)]
 #[expect(missing_docs)]
@@ -606,6 +609,8 @@ pub struct EdgeFadeParams {
     pub right_x: f32,
     pub band_left: f32,
     pub band_right: f32,
+    pub ease: f32,
+    pub _pad: [f32; 3],
 }
 
 #[derive(Default, Debug, Copy, Clone)]

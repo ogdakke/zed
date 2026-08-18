@@ -1272,7 +1272,20 @@ struct EdgeFadeParams {
     float right_x;
     float band_left;
     float band_right;
+    float ease;
+    float pad0;
+    float pad1;
+    float pad2;
 };
+
+// ease > 0: t^ease (2 = quadratic). ease < 0: 1-(1-t)^|ease|. ease == 0: t².
+float apply_edge_fade_ease(float ramp, float ease) {
+    if (ease < 0.0) {
+        return 1.0 - pow(1.0 - ramp, -ease);
+    }
+    float power = ease > 0.0 ? ease : 2.0;
+    return pow(ramp, power);
+}
 
 float edge_fade_alpha(float2 position, EdgeFadeParams fade) {
     float ramp = 1.0;
@@ -1288,7 +1301,7 @@ float edge_fade_alpha(float2 position, EdgeFadeParams fade) {
     if (fade.band_right > 0.0) {
         ramp = min(ramp, saturate((fade.right_x - position.x) / fade.band_right));
     }
-    return ramp * ramp;
+    return apply_edge_fade_ease(ramp, fade.ease);
 }
 
 struct EffectQuad {
